@@ -71,7 +71,7 @@ static int device_release(struct inode *inode,
                           struct file *file)
 {
     // As there's no requirement to release the tree once devices close,
-    // we simply exit upon release   
+    // we simply exit upon release
     return SUCCESS;
 }
 
