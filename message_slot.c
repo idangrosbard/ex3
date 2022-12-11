@@ -210,7 +210,6 @@ static long device_ioctl(struct file *file,
                          unsigned int ioctl_command_id,
                          unsigned int ioctl_param)
 {
-    
     // Make sure the correct ioctl function was called
     if (MSG_SLOT_CHANNEL == ioctl_command_id)
     {
