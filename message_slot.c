@@ -51,20 +51,15 @@ static int device_open(struct inode *inode,
                        struct file *file)
 {
     unsigned int minor;
-   	printk(KERN_ERR "OPEN: Start open file\n");
     minor = (unsigned int)iminor(inode);
     
     if (opened_slots[minor] == 0) {
-		printk(KERN_ERR "OPEN: File wasn't opened yet\n");    
         INIT_RADIX_TREE(&slots[minor], GFP_ATOMIC);
-		printk(KERN_ERR "OPEN: Initialized radix tree\n");        
-        INIT_LIST_HEAD(&existing_slot_channels[minor]);\
-		printk(KERN_ERR "OPEN: Initialied list\n");                
+        INIT_LIST_HEAD(&existing_slot_channels[minor]);           
         opened_slots[minor]++;
     }
 
-    file->private_data = (void *)kmalloc(sizeof(uint32_t), GFP_KERNEL);
-	printk(KERN_ERR "Opened private data slot\n");            
+    file->private_data = NULL;
     return SUCCESS;
 }
 
@@ -74,8 +69,7 @@ static int device_release(struct inode *inode,
 {
     // As there's no requirement to release the tree once devices close,
     // we simply exit upon release
-  	printk(KERN_ERR "RELEASE: Device release\n");
-    kfree(file->private_data);
+    file->private_data = NULL;
     return SUCCESS;
 }
 
@@ -89,42 +83,34 @@ static ssize_t device_read(struct file *file,
 {
     uint8_t minor;
     ssize_t number_of_err_bytes;
-    uint32_t channel;
     struct channel_message * lookup_value;
-  	printk(KERN_ERR "READ: Device read\n");
     // We get the minor, and the channel number
     minor = (uint8_t)iminor(file_inode(file));
-    channel = *((uint32_t *)file->private_data);
-    if (channel == 0) {
+    if (file->private_data == NULL) {
         return -EINVAL;
     }
 
-    lookup_value = (struct channel_message *)radix_tree_lookup(&slots[minor], channel);
+    lookup_value = (struct channel_message *)file->private_data;
 
-    if (lookup_value == NULL) {
-        // If the radix tree doesn't have the channel stored, we return errno = EINVAL (invalid channel)
-      	printk(KERN_ERR "READ: Coudlnt find the value in the tree\n");
+    if (lookup_value->size == 0) {
+        // Content of the channel wasn't initialized
         return -EWOULDBLOCK;
     } else {
         // The channel exists, and we can copy the message from it (byte by byte)
         
         if (access_ok(buffer, lookup_value->size) == 0) {
-           	printk(KERN_ERR "READ: Can't write to the buffer\n");
             // If we can't write to the buffer, we return an EFAULT
             return -EFAULT;
         }
         else {
-           	printk(KERN_ERR "READ: Trying to write to the buffer\n");
             number_of_err_bytes = copy_to_user(buffer, lookup_value->message, lookup_value->size);
 
             // If the buffer isn't large enough for the message
             if (number_of_err_bytes > 0) {
-	           	printk(KERN_ERR "READ: Error in %ld bytes\n", number_of_err_bytes);
                 return -ENOSPC;
             }
             
             // Finally, if everything went as expected:
-           	printk(KERN_ERR "READ: Finished reading\n");
             return (ssize_t)(lookup_value->size);
         }
     }
@@ -139,90 +125,45 @@ static ssize_t device_write(struct file *file,
                             loff_t *offset)
 {
     uint8_t minor;
-    int radix_tree_action_status;
+    uint8_t * message_content;
     ssize_t number_of_err_bytes;
-    uint32_t channel;
-    struct channel_message * new_message, * old_message;
-    struct channel_list * new_channel;
+    struct channel_message * message;
     
 
     // We get the minor, and the channel number
     minor = (uint8_t)iminor(file_inode(file));
-    channel = *((uint32_t *)file->private_data);
-	printk(KERN_ERR "WRITE: Identified channel %d\n", channel);
-    if (channel == 0) {
+    message = (struct channel_message *)file->private_data;
+    if (message == NULL) {
         return -EINVAL;
     }
 
     // If the length we are requested to write is too long, we return EINVAL
     if ((length >= BUF_LEN) || (length == 0)) {
-       	printk(KERN_ERR "WRITE: Invalid message of size %ld\n", length);
         return -EMSGSIZE;
     }
     if (access_ok(buffer, length) == 0) {
         // If we can't read from the buffer, we return an EFAULT
-       	printk(KERN_ERR "WRITE: Can't write to the buffer\n");
         return -EFAULT;
     }
     
     // Create the new message
-    new_message = kmalloc(sizeof(struct channel_message), GFP_KERNEL);
-	printk(KERN_ERR "WRITE: Attempting to write to addr %p\n", (void *)(new_message));
-    if (new_message == NULL) {
-       	printk(KERN_ERR "WRITE: Couldn't write message\n");
+    
+    message_content = kmalloc(length, GFP_KERNEL);
+    if (message_content == NULL) {
         // We couldn't allocate space for the message
         return -ENOSPC;
     }
-    new_message->message = kmalloc(length, GFP_KERNEL);
-   	printk(KERN_ERR "WRITE: Attempting to write message content to addr %p\n", (void *)(new_message->message));
-    if (new_message->message == NULL) {
-        // We couldn't allocate space for the message
-        kfree((void *)new_message);
-        return -ENOSPC;
-    }
 
-    new_message->size = length;
-
-    number_of_err_bytes = copy_from_user(new_message->message, buffer, new_message->size);
-    printk(KERN_ERR "WRITE: Invalid write bytes %ld\n", number_of_err_bytes);
+    number_of_err_bytes = copy_from_user(message_content, buffer, length);
     // If any bytes could not pass for some reason
     if (number_of_err_bytes > 0) {
-        kfree((void *)(new_message->message));
-        kfree((void *)new_message);
+        kfree((void *)message_content);
         return -ENOSPC;
     }
-    
-    old_message = (struct channel_message *)radix_tree_lookup(&slots[minor], channel);
-
-    if (old_message != (struct channel_message *)NULL) {
-	    printk(KERN_ERR "WRITE: Found old message at %p\n", old_message);
-        // If the channel was initialized, we free the existing message
-        kfree((void *)(old_message->message));
-        kfree((void *)old_message);
-        radix_tree_delete(&slots[minor], channel);
-    } else {
-        // We add the channel to the list of open channels:
-		printk(KERN_ERR "WRITE: Adding a new channel to the list %d\n", channel);
-        minor = (uint8_t)iminor(file_inode(file));
-        new_channel = kmalloc(sizeof(struct channel_list), GFP_KERNEL);
-        new_channel->channel = channel;
-        INIT_LIST_HEAD(&(new_channel->list));
-        list_add_tail(&(new_channel->list), &existing_slot_channels[minor]);
-    }
-
-    // We insert the new message to the channel
-    radix_tree_action_status = radix_tree_insert(&slots[minor], channel, new_message);
-	printk(KERN_ERR "WRITE: Inserting to tree with status %d\n", radix_tree_action_status);
-    if (radix_tree_action_status != 0) {
-        // If we couldn't insert the message, free the memory it takes
-        kfree((void *)(new_message->message));
-        kfree((void *)new_message);
-        return radix_tree_action_status;
-    }
-    
-    // Finally, if everything went as expected...
-    return (ssize_t)(new_message->size);
-
+    kfree(message->message);
+    message->message = message_content;
+    message->size = length;
+    return length;
 }
 
 //----------------------------------------------------------------
@@ -230,16 +171,43 @@ static long device_ioctl(struct file *file,
                          unsigned int ioctl_command_id,
                          long unsigned int ioctl_param)
 {
-   	printk(KERN_ERR "IOCTL\n");
+	uint8_t minor;
+	int radix_tree_action_status;
+	struct channel_message * message;	
+    struct channel_list * new_channel;
+    
+   	minor = (uint8_t)iminor(file_inode(file));
     // Make sure the correct ioctl function was called
     if (MSG_SLOT_CHANNEL == ioctl_command_id)
     {
         // Make sure the that the channel is valid
         if (ioctl_param != 0) {
-       	   	printk(KERN_ERR "IOCTL: Setting channel\n");
+        	message = (struct channel_message *)radix_tree_lookup(&slots[minor], ioctl_param);
+    		if (message == (struct channel_message *)NULL) {
+				// The channel wasn't initialized yet, so we initialize it
+    			message = kmalloc(sizeof(struct channel_message), GFP_KERNEL);
+    			if (message == NULL) {
+	    			// Couldn't alocate a channel
+    				return -ENOSPC;
+    			}
+    			message->message = NULL;
+    			message->size = 0;
+    			
+    			radix_tree_action_status = radix_tree_insert(&slots[minor], ioctl_param, message);
+    			if (radix_tree_action_status != 0) {
+        			// Couldn't insert the channel to the tree
+        			kfree((void *)message);
+        			return radix_tree_action_status;
+    			}
+    		}
             // Set the active channel in the file's private data
-            *((uint32_t *)file->private_data) = (uint32_t)ioctl_param;
-
+            file->private_data = message;
+            
+            // We add the channel to the list of open channels:
+        	new_channel = kmalloc(sizeof(struct channel_list), GFP_KERNEL);
+        	new_channel->channel = ioctl_param;
+        	INIT_LIST_HEAD(&(new_channel->list));
+        	list_add_tail(&(new_channel->list), &existing_slot_channels[minor]);
             return SUCCESS;
         }
     }
@@ -284,11 +252,6 @@ static int __init simple_init(void)
         return rc;
     }
 
-    // // We set all slots as uninitialized
-    // for (i = 0; i < MAX_SLOTS; i++) {
-    //     opened_slots[i] = 0;
-    // }
-
     return 0;
 }
 
@@ -301,29 +264,28 @@ static void __exit simple_cleanup(void)
     struct channel_message *open_message;
     uint16_t i = 0;
 	
-    // For each open slot:
+    // For each slot:
     for (i = 0; i < MAX_SLOTS; i++) {
         if (opened_slots[i] > 0) {
+	        // If we found an open slot
 	        opened_slots[i] = 0;
-	        printk(KERN_ERR "CLEANUP: Slot %d was opened in the file\n", i);
             list_for_each_entry(temp, &existing_slot_channels[i], list) {
-              	printk(KERN_ERR "CLEANUP: Iterating open channels\n");
+            	// We iterate over all channels in the slot
                 channel = temp->channel;
-               	printk(KERN_ERR "CLEANUP: Encountered channel %d\n", channel);
                 open_message = (struct channel_message *)radix_tree_lookup(&slots[i], channel);
 
                 if (open_message != NULL) {
-       				printk(KERN_ERR "CLEANUP: Found the open message\n");
                     // If the channel was initialized, we free the existing message
                     // and delete from the tree
-                    kfree((void *)(open_message->message));
+                    if (open_message->size > 0) {
+	                    kfree((void *)(open_message->message));
+                    }
                     kfree((void *)open_message);
                     radix_tree_delete(&slots[i], channel);
                 }
             }
             temp = NULL;
             // Finaly we delete the open channels list
-			printk(KERN_ERR "CLEANUP: Deleting the list\n");
             list_for_each_entry_safe(cursor, temp, &existing_slot_channels[i], list) {
                 list_del(&(cursor->list));
                 kfree((void *)cursor);
@@ -331,10 +293,7 @@ static void __exit simple_cleanup(void)
         }
     }
 
-	printk(KERN_ERR "CLEANUP: Second to last line\n");
-    // Should always succeed
     unregister_chrdev(MAJOR_NUM, DEVICE_RANGE_NAME);
-   	printk(KERN_ERR "CLEANUP: last line\n");
 }
 	
 //---------------------------------------------------------------
