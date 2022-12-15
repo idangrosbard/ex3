@@ -129,6 +129,9 @@ static ssize_t device_write(struct file *file,
     ssize_t number_of_err_bytes;
     struct channel_message * message;
     
+    if (file->private_data == NULL) {
+        return -EINVAL;
+    }
 
     // We get the minor, and the channel number
     minor = (uint8_t)iminor(file_inode(file));
@@ -232,10 +235,7 @@ struct file_operations Fops = {
 // Initialize the module - Register the character device
 static int __init simple_init(void)
 {
-    int rc = -1;
-    // uint8_t i;
-    // init dev struct
-    // memset(&device_info, 0, sizeof(struct chardev_info));    
+    int rc = -1; 
     
     memset( &opened_slots, 0, MAX_SLOTS * sizeof(uint32_t) );
     memset( &existing_slot_channels, 0, MAX_SLOTS * sizeof(struct list_head) );
